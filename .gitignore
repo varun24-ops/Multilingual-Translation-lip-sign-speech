@@ -25,10 +25,6 @@ venv/
 env/
 .env/
 
-# ── Model folders (too large for git) ─────────────────────────────────────
-backend/lip_reading/
-backend/Sign-Language-Detection-Mediapipe-ANN/
-
 # ── HuggingFace cache ──────────────────────────────────────────────────────
 .cache/
 *.pt
