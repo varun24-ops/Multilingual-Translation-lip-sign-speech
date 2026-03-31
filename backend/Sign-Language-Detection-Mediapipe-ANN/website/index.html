@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign Language Detection</title>
+    <link rel="icon" type="image/png" href="assets/logo.png">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Loading Overlay -->
+    <div id="loading-overlay">
+        <div class="loader-content">
+            <div class="spinner"></div>
+            <p id="loading-text">Loading models...</p>
+        </div>
+    </div>
+
+    <header>
+        <h1>Sign Language Detection</h1>
+        <p class="subtitle">Real-time hand sign recognition powered by MediaPipe &amp; ONNX Runtime — runs entirely in your browser.</p>
+    </header>
+
+    <main>
+        <!-- Video Section -->
+        <div class="video-container">
+            <video id="webcam" autoplay playsinline></video>
+            <canvas id="overlay-canvas"></canvas>
+            <!-- Current prediction badge -->
+            <div id="prediction-badge" class="hidden">
+                <span id="prediction-label"></span>
+                <span id="prediction-confidence"></span>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls">
+            <button id="start-btn" disabled>Start Camera</button>
+            <button id="translate-btn" disabled>Translate</button>
+            <button id="undo-btn">Undo Last</button>
+            <button id="clear-btn">Clear</button>
+            <button id="save-btn">Save Session</button>
+        </div>
+
+
+
+        <!-- Output Panel -->
+        <div class="output-panel">
+            <div class="output-section">
+                <label>Detected Signs</label>
+                <div id="sequence-display" class="output-text">Waiting for signs...</div>
+            </div>
+            <div class="output-section">
+                <label>Sentence</label>
+                <div id="sentence-display" class="output-text sentence">Press "Translate" to form a sentence.</div>
+            </div>
+        </div>
+
+        <!-- Info Cards -->
+        <div class="info-cards">
+            <div class="card">
+                <h3>How it works</h3>
+                <p>Point your webcam at your hand. The system detects hand landmarks using MediaPipe, then classifies the sign using a neural network — all running locally in your browser.</p>
+            </div>
+            <div class="card">
+                <h3>Supported Signs</h3>
+                <div id="supported-signs" class="sign-tags"></div>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <p>Built with MediaPipe &amp; ONNX Runtime Web. No data leaves your device.</p>
+    </footer>
+
+    <!-- Dependencies via CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.min.js"></script>
+    <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,328 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: #0f0f13;
+    color: #e0e0e0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+
+/* ---------- Loading Overlay ---------- */
+#loading-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 15, 19, 0.95);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    transition: opacity 0.4s;
+}
+
+#loading-overlay.hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.loader-content {
+    text-align: center;
+}
+
+.spinner {
+    width: 48px;
+    height: 48px;
+    border: 4px solid #333;
+    border-top-color: #6c63ff;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin: 0 auto 16px;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+#loading-text {
+    color: #aaa;
+    font-size: 1rem;
+}
+
+/* ---------- Header ---------- */
+header {
+    text-align: center;
+    padding: 32px 16px 8px;
+}
+
+header h1 {
+    font-size: 1.8rem;
+    color: #fff;
+}
+
+.subtitle {
+    color: #888;
+    font-size: 0.9rem;
+    margin-top: 6px;
+}
+
+/* ---------- Main Layout ---------- */
+main {
+    max-width: 720px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 16px;
+    flex: 1;
+}
+
+/* ---------- Video ---------- */
+.video-container {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    background: #1a1a24;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid #2a2a3a;
+}
+
+#webcam {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transform: scaleX(-1);
+}
+
+#overlay-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+/* Prediction badge */
+#prediction-badge {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(6px);
+    padding: 8px 16px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    transition: opacity 0.2s;
+}
+
+#prediction-badge.hidden {
+    opacity: 0;
+}
+
+#prediction-label {
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: #6c63ff;
+    text-transform: uppercase;
+}
+
+#prediction-confidence {
+    font-size: 0.85rem;
+    color: #aaa;
+}
+
+/* ---------- Controls ---------- */
+.controls {
+    display: flex;
+    gap: 10px;
+    margin-top: 14px;
+    justify-content: center;
+}
+
+.controls button {
+    padding: 10px 22px;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+}
+
+.controls button:active {
+    transform: scale(0.97);
+}
+
+#start-btn {
+    background: #6c63ff;
+    color: #fff;
+}
+
+#start-btn:hover:not(:disabled) {
+    background: #5a52e0;
+}
+
+#start-btn:disabled {
+    background: #3a3a4a;
+    color: #666;
+    cursor: not-allowed;
+}
+
+#start-btn.running {
+    background: #e05050;
+}
+
+#start-btn.running:hover {
+    background: #c04040;
+}
+
+#translate-btn {
+    background: #28a745;
+    color: #fff;
+}
+
+#translate-btn:hover:not(:disabled) {
+    background: #22903c;
+}
+
+#translate-btn:disabled {
+    background: #3a3a4a;
+    color: #666;
+    cursor: not-allowed;
+}
+
+#translate-btn.translating {
+    background: #d4a017;
+    cursor: wait;
+}
+
+#clear-btn, #undo-btn {
+    background: #1e1e2e;
+    color: #ccc;
+    border: 1px solid #333;
+}
+
+#clear-btn:hover, #undo-btn:hover {
+    background: #2a2a3e;
+}
+
+#save-btn {
+    background: #22c55e;
+    color: #fff;
+}
+
+#save-btn:hover:not(:disabled) {
+    background: #16a34a;
+}
+
+#save-btn:disabled {
+    background: #3a3a4a;
+    color: #666;
+    cursor: not-allowed;
+}
+
+/* ---------- Output Panel ---------- */
+.output-panel {
+    margin-top: 20px;
+    background: #16161e;
+    border-radius: 12px;
+    border: 1px solid #2a2a3a;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.output-section label {
+    display: block;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #666;
+    margin-bottom: 6px;
+}
+
+.output-text {
+    font-size: 1rem;
+    color: #ccc;
+    min-height: 28px;
+    word-wrap: break-word;
+}
+
+.output-text.sentence {
+    font-size: 1.15rem;
+    color: #fff;
+    font-weight: 500;
+}
+
+/* ---------- Info Cards ---------- */
+.info-cards {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin-top: 20px;
+}
+
+.card {
+    background: #16161e;
+    border: 1px solid #2a2a3a;
+    border-radius: 12px;
+    padding: 18px;
+}
+
+.card h3 {
+    font-size: 0.95rem;
+    color: #fff;
+    margin-bottom: 8px;
+}
+
+.card p {
+    font-size: 0.85rem;
+    color: #999;
+    line-height: 1.5;
+}
+
+.sign-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.sign-tag {
+    background: #22223a;
+    color: #bbb;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    text-transform: capitalize;
+}
+
+/* ---------- Footer ---------- */
+footer {
+    text-align: center;
+    padding: 20px;
+    color: #555;
+    font-size: 0.8rem;
+}
+
+/* ---------- Responsive ---------- */
+@media (max-width: 600px) {
+    header h1 {
+        font-size: 1.3rem;
+    }
+
+    .info-cards {
+        grid-template-columns: 1fr;
+    }
+
+    .controls {
+        flex-wrap: wrap;
+    }
+}
