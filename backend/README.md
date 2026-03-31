@@ -1,4 +1,4 @@
-# LinguaAI — Backend
+# Multilingual-Translation-lip-sign-speech — Backend
 
 FastAPI backend for the Unicomm multilingual communication system.  
 Handles Speech Translation, Sign Language Recognition, and Lip Reading pipelines.
@@ -78,8 +78,8 @@ Verify: `ffmpeg -version`
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/varun24-ops/unicomm
-cd unicomm/backend
+git clone https://github.com/varun24-ops/Multilingual-Translation-lip-sign-speech
+cd Multilingual-Translation-lip-sign-speech/backend
 ```
 
 ### 3. Create Python environment
