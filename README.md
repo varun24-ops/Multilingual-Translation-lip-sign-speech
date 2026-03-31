@@ -1,4 +1,4 @@
-# LinguaAI — Multilingual Communication System
+# Unicomm — Multilingual Communication System
 
 An AI-powered platform for Speech Translation, Sign Language Recognition, and Lip Reading — supporting Hindi, Tamil, Kannada, Telugu, and Malayalam.
 
@@ -79,8 +79,8 @@ lingua-ai/
 ### 1. Clone
 
 ```bash
-git clone https://github.com/varun24-ops/unicomm
-cd unicomm
+git clone https://github.com/varun24-ops/Multilingual-Translation-lip-sign-speech
+cd Multilingual-Translation-lip-sign-speech
 ```
 
 ### 2. Backend setup
