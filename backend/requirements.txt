@@ -1,4 +1,3 @@
-imageio-ffmpeg
 absl-py==2.4.0
 accelerate==1.13.0
 annotated-doc==0.0.4
