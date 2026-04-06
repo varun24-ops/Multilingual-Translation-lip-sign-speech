@@ -5,7 +5,7 @@ import Dashboard from "./pages/Dashboard";
 import About     from "./pages/About";
 import Auth      from "./pages/Auth";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000" || "https://multilingual-translation-lip-sign-speech.onrender.com";
 
 const NAV = [
   { id: "demo",      label: "Live Demo",    icon: "⚡" },
