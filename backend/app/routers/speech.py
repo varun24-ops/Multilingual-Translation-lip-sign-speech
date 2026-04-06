@@ -2,10 +2,9 @@
 #
 # Full pipeline:
 #   Audio
-#     → Step 1: LangID  (BetterLangIDClassifier — same as inference.py)
-#     → Step 2: ASR     (your whisper-{lang}-lora  OR  whisper-small fallback)
-#     → Step 3: → English  (Wizard1203/nllb-{lang}-en)
-#     → Step 4: → Target   (Wizard1203/nllb-en-{lang}  OR  Google Translate fallback)
+#     → Step 1: ASR + LangID  (openai/whisper-large-v3 — detects language automatically)
+#     → Step 2: [optional MT] → Google Translate → Target
+#     → Step 3: [optional TTS] → gender detect → edge-tts neural voice
 
 import os
 import asyncio
@@ -14,71 +13,39 @@ import subprocess
 import numpy as np
 import scipy.io.wavfile as wav
 import torch
-import torch.nn as nn
-import torchaudio.transforms as T
-from huggingface_hub import hf_hub_download
 from concurrent.futures import ThreadPoolExecutor
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 import time
 from session_helper import save_session
 
 router   = APIRouter()
 executor = ThreadPoolExecutor(max_workers=2)
 
-# ── config ──────────────────────────────────────────────────────────────────
-HF_USERNAME                 = "samruddhi1916"
-LANGID_CONFIDENCE_THRESHOLD = 0.5    # same as inference.py
-WHISPER_BASE_ID             = "openai/whisper-small"
+# ── config ───────────────────────────────────────────────────────────────────
+WHISPER_MODEL_ID = "openai/whisper-large-v3"
+SAMPLE_RATE      = 16000
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# index → language name (same as inference.py)
-IDX_TO_LANG = {
-    0: "tamil",
-    1: "telugu",
-    2: "hindi",
-    3: "malayalam",
-    4: "kannada",
+# Languages whisper reports → our internal key
+WHISPER_LANG_TO_KEY = {
+    "tamil":     "tamil",
+    "telugu":    "telugu",
+    "hindi":     "hindi",
+    "malayalam": "malayalam",
+    "kannada":   "kannada",
+    "english":   "english",
 }
 
-# Your Whisper LoRA ASR models
-YOUR_ASR_MODELS = {
-    "kannada":   "Samruddhi1916/whisper-kannada-lora",
-    "tamil":     "Samruddhi1916/whisper-tamil-lora",
-    "malayalam": "Samruddhi1916/whisper-malayalam-lora",
-    "hindi":     "Samruddhi1916/whisper-hindi-lora",
-    "telugu":    "Samruddhi1916/whisper-telugu-lora",
+SUPPORTED_LANGS = set(WHISPER_LANG_TO_KEY.keys())
+
+GOOGLE_LANG_CODES = {
+    "hindi":     "hi",
+    "tamil":     "ta",
+    "kannada":   "kn",
+    "telugu":    "te",
+    "malayalam": "ml",
+    "english":   "en",
 }
 
-# Your NLLB translation models
-# lang → English
-YOUR_TO_EN_MODELS = {
-    "malayalam": "Wizard1203/nllb-ml-en",
-    "tamil":     "Wizard1203/nllb-ta-en",
-    "kannada":   "Wizard1203/nllb-kn-en",
-    "telugu":    "Wizard1203/nllb-te-en",
-    "hindi":     "Wizard1203/nllb-hi-en",
-}
-# English → lang
-YOUR_FROM_EN_MODELS = {
-    "malayalam": "Wizard1203/nllb-en-ml",
-    "tamil":     "Wizard1203/nllb-en-ta",
-    "kannada":   "Wizard1203/nllb-en-kn",
-    "telugu":    "Wizard1203/nllb-en-te",
-    "hindi":     "Wizard1203/nllb-en-hi",
-}
-
-# NLLB language codes for tokenizer forced_bos_token
-NLLB_LANG_CODES = {
-    "malayalam": "mal_Mlym",
-    "tamil":     "tam_Taml",
-    "kannada":   "kan_Knda",
-    "telugu":    "tel_Telu",
-    "hindi":     "hin_Deva",
-    "english":   "eng_Latn",
-}
-
-# Target language name → NLLB key mapping
 TARGET_LANG_MAP = {
     "Hindi":     "hindi",
     "Tamil":     "tamil",
@@ -88,43 +55,43 @@ TARGET_LANG_MAP = {
     "English":   "english",
 }
 
-
-# ── LangID model (same as inference.py) ──────────────────────────────────────
-class BetterFeatureExtractor(nn.Module):
-    def __init__(self, n_mfcc=40):
-        super().__init__()
-        self.mfcc = T.MFCC(
-            sample_rate=16000, n_mfcc=n_mfcc,
-            melkwargs={"n_fft": 400, "hop_length": 160, "n_mels": 64}
-        )
-    def forward(self, waveform):
-        mfcc   = self.mfcc(waveform)
-        delta  = mfcc[:, :, 1:] - mfcc[:, :, :-1]
-        delta2 = delta[:, :, 1:] - delta[:, :, :-1]
-        def stats(x):
-            return torch.cat([x.mean(dim=-1), x.std(dim=-1)], dim=-1)
-        return torch.cat([stats(mfcc), stats(delta), stats(delta2)], dim=-1)
-
-
-class BetterLangIDClassifier(nn.Module):
-    def __init__(self, num_langs=5):
-        super().__init__()
-        self.features   = BetterFeatureExtractor()
-        self.classifier = nn.Sequential(
-            nn.Linear(240, 512), nn.BatchNorm1d(512), nn.ReLU(), nn.Dropout(0.4),
-            nn.Linear(512, 256), nn.BatchNorm1d(256), nn.ReLU(), nn.Dropout(0.4),
-            nn.Linear(256, 128), nn.BatchNorm1d(128), nn.ReLU(), nn.Dropout(0.3),
-            nn.Linear(128, num_langs)
-        )
-    def forward(self, waveform):
-        return self.classifier(self.features(waveform))
-
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"[speech] Device: {device}")
 
 # ── model cache ───────────────────────────────────────────────────────────────
-_langid_model  = None
-_asr_cache     = {}    # { "hindi": (processor, model) }
-_asr_fallback  = None
-_nllb_cache    = {}    # { "Wizard1203/nllb-ml-en": (tokenizer, model) }
+_pipe = None   # HuggingFace ASR pipeline (whisper-large-v3)
+
+
+# ── model loader (lazy, called once) ─────────────────────────────────────────
+def _load_model():
+    global _pipe
+    if _pipe is not None:
+        return
+
+    from transformers import pipeline, AutoModelForSpeechSeq2Seq, AutoProcessor
+
+    print(f"[speech] Loading {WHISPER_MODEL_ID}...")
+
+    model = AutoModelForSpeechSeq2Seq.from_pretrained(
+        WHISPER_MODEL_ID,
+        torch_dtype=torch.float16 if device.type == "cuda" else torch.float32,
+        low_cpu_mem_usage=True,
+    )
+    model.to(device)
+
+    processor = AutoProcessor.from_pretrained(WHISPER_MODEL_ID)
+
+    _pipe = pipeline(
+        "automatic-speech-recognition",
+        model=model,
+        tokenizer=processor.tokenizer,
+        feature_extractor=processor.feature_extractor,
+        torch_dtype=torch.float16 if device.type == "cuda" else torch.float32,
+        device=device,
+        return_timestamps=False,
+    )
+
+    print(f"[speech] {WHISPER_MODEL_ID} ready ✓")
 
 
 # ── audio helper ──────────────────────────────────────────────────────────────
@@ -151,256 +118,217 @@ def load_audio_16k(audio_path: str) -> np.ndarray:
     return data
 
 
-# ── step 1: language identification (same model as inference.py) ──────────────
-def get_langid_model():
-    global _langid_model
-    if _langid_model is None:
-        print("[speech] Loading LangID (custom MFCC model)...")
-        path  = hf_hub_download(repo_id=f"{HF_USERNAME}/langid-indic", filename="langid_best.pt")
-        model = BetterLangIDClassifier().to(device)
-        model.load_state_dict(torch.load(path, map_location=device))
-        model.eval()
-        _langid_model = model
-        print("[speech] LangID loaded ✓")
-    return _langid_model
+# language token IDs (ISO 639-1 format — confirmed working with whisper-large-v3)
+LANG_TOKEN_IDS = {
+    50287: "tamil",
+    50299: "telugu",
+    50276: "hindi",
+    50296: "malayalam",
+    50306: "kannada",
+    50259: "english",
+    50320: "marathi",
+    50302: "bengali",
+    50321: "punjabi",
+    50333: "gujarati",
+    50290: "urdu",
+}
 
 
-def identify_language(audio_path: str) -> dict:
-    try:
-        model    = get_langid_model()
-        audio    = load_audio_16k(audio_path)
-        waveform = torch.tensor(audio).unsqueeze(0).to(device)
+# ── step 1: ASR + language identification ─────────────────────────────────────
+def transcribe_and_detect(audio_path: str) -> dict:
+    """
+    Two cheap calls:
+      1. Encoder + one decoder step → language token logits  (no generate)
+      2. model.generate() → transcript
+    """
+    _load_model()
 
-        # pad/trim to 8 seconds — same as inference.py
-        max_len = 16000 * 8
-        if waveform.shape[1] > max_len:
-            waveform = waveform[:, :max_len]
-        else:
-            waveform = torch.nn.functional.pad(waveform, (0, max_len - waveform.shape[1]))
-
-        with torch.no_grad():
-            probs      = torch.softmax(model(waveform), dim=1)[0]
-            lang_idx   = probs.argmax().item()
-            confidence = probs[lang_idx].item()
-
-        lang = IDX_TO_LANG[lang_idx]
-        print(f"[speech] LangID → {lang} ({confidence:.2f})")
-        return {"language": lang, "confidence": confidence}
-
-    except Exception as e:
-        print(f"[speech] LangID failed: {e}")
-        return {"language": "unknown", "confidence": 0.0}
-
-
-# ── step 2: ASR ───────────────────────────────────────────────────────────────
-def get_asr_model(lang_key: str):
-    global _asr_cache
-    if lang_key not in _asr_cache:
-        from transformers import WhisperProcessor, WhisperForConditionalGeneration
-        from peft import PeftModel
-        model_id  = YOUR_ASR_MODELS[lang_key]
-        print(f"[speech] Loading ASR LoRA: {model_id}")
-        processor = WhisperProcessor.from_pretrained(WHISPER_BASE_ID)
-        base      = WhisperForConditionalGeneration.from_pretrained(WHISPER_BASE_ID)
-        model     = PeftModel.from_pretrained(base, model_id)
-        model.eval()
-        _asr_cache[lang_key] = (processor, model)
-        print(f"[speech] ASR LoRA loaded for {lang_key} ✓")
-    return _asr_cache[lang_key]
-
-
-def get_asr_fallback():
-    global _asr_fallback
-    if _asr_fallback is None:
-        from transformers import WhisperProcessor, WhisperForConditionalGeneration
-        print("[speech] Loading ASR fallback (whisper-small)...")
-        processor = WhisperProcessor.from_pretrained(WHISPER_BASE_ID)
-        model     = WhisperForConditionalGeneration.from_pretrained(WHISPER_BASE_ID)
-        model.eval()
-        _asr_fallback = (processor, model)
-        print("[speech] ASR fallback loaded ✓")
-    return _asr_fallback
-
-
-def transcribe(audio_path: str, language: str, use_lora: bool) -> str:
     audio = load_audio_16k(audio_path)
+    audio = audio / (np.abs(audio).max() + 1e-8)
 
-    if use_lora and language in YOUR_ASR_MODELS:
-        try:
-            processor, model = get_asr_model(language)
-            source = f"your LoRA ({language})"
-        except Exception as e:
-            print(f"[speech] LoRA load failed: {e} → fallback")
-            processor, model = get_asr_fallback()
-            source = "whisper fallback (lora error)"
-    else:
-        processor, model = get_asr_fallback()
-        source = "whisper fallback"
+    model     = _pipe.model
+    tokenizer = _pipe.tokenizer
 
-    inputs     = processor(audio, sampling_rate=16000, return_tensors="pt")
-    gen_kwargs = {"max_new_tokens": 256, "task": "transcribe"}
-    if language and language != "unknown":
-        gen_kwargs["language"] = language
+    input_features = _pipe.feature_extractor(
+        audio, sampling_rate=SAMPLE_RATE, return_tensors="pt"
+    ).input_features.to(device)
 
+    if device.type == "cuda":
+        input_features = input_features.half()
+
+    # ── language detection via encoder logits (single decoder step) ──
     with torch.no_grad():
-        ids = model.generate(input_features=inputs["input_features"], **gen_kwargs)
-
-    transcript = processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
-    print(f"[speech] Transcribed ({source}): {transcript[:60]}...")
-    return transcript
-
-
-# ── step 3 & 4: translation ───────────────────────────────────────────────────
-def get_nllb_model(model_id: str):
-    global _nllb_cache
-    if model_id not in _nllb_cache:
-        import logging
-        from transformers import NllbTokenizer, AutoModelForSeq2SeqLM
-        logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
-        print(f"[speech] Loading NLLB: {model_id}")
-        tokenizer = NllbTokenizer.from_pretrained(model_id)
-        model     = AutoModelForSeq2SeqLM.from_pretrained(model_id, torch_dtype=torch.float32)
-        shared = model.model.shared.weight.data.clone()
-        model.lm_head.weight.data                    = shared
-        model.model.encoder.embed_tokens.weight.data = shared
-        model.model.decoder.embed_tokens.weight.data = shared
-        model.config.tie_word_embeddings = True
-        model.eval()
-        _nllb_cache[model_id] = (tokenizer, model)
-        print(f"[speech] NLLB loaded: {model_id} ✓")
-    return _nllb_cache[model_id]
-
-
-def translate_nllb(text: str, model_id: str, tgt_lang_code: str) -> str:
-    tokenizer, model = get_nllb_model(model_id)
-    inputs     = tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512)
-    forced_bos = tokenizer.convert_tokens_to_ids(tgt_lang_code)
-
-    with torch.no_grad():
-        ids = model.generate(
-            **inputs,
-            forced_bos_token_id=forced_bos,
-            max_new_tokens=256,
-            num_beams=4,
+        decoder_input = torch.tensor(
+            [[model.config.decoder_start_token_id]],
+            device=device, dtype=torch.long
         )
-    return tokenizer.batch_decode(ids, skip_special_tokens=True)[0].strip()
+        logits = model(
+            input_features    = input_features,
+            decoder_input_ids = decoder_input,
+        ).logits  # (1, 1, vocab_size)
+
+    probs            = torch.softmax(logits[0, 0].float(), dim=-1)
+    best_token_id    = max(LANG_TOKEN_IDS, key=lambda tid: probs[tid].item())
+    detected_lang    = LANG_TOKEN_IDS[best_token_id]
+    lang_confidence  = probs[best_token_id].item()
+
+    # ── transcription ──
+    with torch.no_grad():
+        generated = model.generate(
+            input_features,
+            task             = "transcribe",
+            language         = None,
+            forced_decoder_ids = None,
+            max_new_tokens   = 256,
+        )
+
+    transcript = tokenizer.decode(generated[0], skip_special_tokens=True).strip()
+
+    lang_key  = WHISPER_LANG_TO_KEY.get(detected_lang, "unknown")
+    lang_code = GOOGLE_LANG_CODES.get(lang_key)
+
+    print(f"[speech] Detected: {detected_lang} (conf={lang_confidence:.3f}) → key={lang_key}")
+    print(f"[speech] Transcript: {transcript[:80]}...")
+
+    return {
+        "transcript":      transcript,
+        "language":        lang_key,
+        "lang_code":       lang_code,
+        "lang_confidence": round(lang_confidence, 3),
+    }
 
 
-def translate_google(text: str, target_lang: str) -> str:
-    """Fallback: Google Translate via deep-translator."""
+# ── step 2: translation via Google Translate ──────────────────────────────────
+def translate(text: str, src_lang: str, tgt_lang_key: str) -> dict:
+    if tgt_lang_key == src_lang or src_lang == "unknown":
+        return {"translation": text, "source": "no_translation_needed"}
+
     try:
         from deep_translator import GoogleTranslator
-        lang_map = {
-            "hindi": "hi", "tamil": "ta", "kannada": "kn",
-            "telugu": "te", "malayalam": "ml", "english": "en",
-        }
-        code   = lang_map.get(target_lang.lower(), "en")
-        result = GoogleTranslator(source="auto", target=code).translate(text)
-        print(f"[speech] Google Translate → {result[:60]}...")
-        return result
+
+        src_code = GOOGLE_LANG_CODES.get(src_lang, "auto")
+        tgt_code = GOOGLE_LANG_CODES.get(tgt_lang_key, "en")
+
+        result = GoogleTranslator(source=src_code, target=tgt_code).translate(text)
+        print(f"[speech] Google Translate ({src_lang} → {tgt_lang_key}): {result[:60]}...")
+        return {"translation": result, "source": "google_translate"}
+
     except Exception as e:
         print(f"[speech] Google Translate failed: {e}")
-        return text
+        return {"translation": text, "source": "translation_failed"}
 
 
-def translate(text: str, src_lang: str, tgt_lang_key: str) -> dict:
-    """
-    Translate text from src_lang to tgt_lang.
-    1. Try your NLLB model (src → English → target)
-    2. If no NLLB model or it fails → Google Translate fallback
-    Returns { translation, source }
-    """
-    # Step 3 — src → English (skip if already English)
-    if src_lang == "english" or src_lang == "unknown":
-        english_text = text
-    elif src_lang in YOUR_TO_EN_MODELS:
-        try:
-            model_id     = YOUR_TO_EN_MODELS[src_lang]
-            english_text = translate_nllb(text, model_id, "eng_Latn")
-            print(f"[speech] → English (NLLB): {english_text[:60]}...")
-        except Exception as e:
-            print(f"[speech] NLLB src→en failed: {e} → Google")
-            english_text = translate_google(text, "english")
-    else:
-        english_text = translate_google(text, "english")
+# ── step 3: TTS (edge-tts + gender detection) ─────────────────────────────────
+VOICE_DB = {
+    "hindi":     {"male": "hi-IN-MadhurNeural",   "female": "hi-IN-SwaraNeural"},
+    "malayalam": {"male": "ml-IN-MidhunNeural",   "female": "ml-IN-SobhanaNeural"},
+    "telugu":    {"male": "te-IN-ManoharNeural",  "female": "te-IN-ShrutiNeural"},
+    "tamil":     {"male": "ta-IN-ValluvarNeural", "female": "ta-IN-PallaviNeural"},
+    "kannada":   {"male": "kn-IN-GaganNeural",    "female": "kn-IN-SapnaNeural"},
+    "english":   {"male": "en-US-GuyNeural",      "female": "en-US-JennyNeural"},
+}
 
-    # Step 4 — English → target
-    if tgt_lang_key == "english":
-        return {"translation": english_text, "source": "nllb_or_google"}
+_speaker_classifier = None
 
-    if tgt_lang_key in YOUR_FROM_EN_MODELS:
-        try:
-            model_id   = YOUR_FROM_EN_MODELS[tgt_lang_key]
-            tgt_code   = NLLB_LANG_CODES[tgt_lang_key]
-            final_text = translate_nllb(english_text, model_id, tgt_code)
-            print(f"[speech] → {tgt_lang_key} (NLLB): {final_text[:60]}...")
-            return {"translation": final_text, "source": "your_nllb"}
-        except Exception as e:
-            print(f"[speech] NLLB en→tgt failed: {e} → Google fallback")
 
-    # Google fallback
-    final_text = translate_google(english_text, tgt_lang_key)
-    return {"translation": final_text, "source": "google_fallback"}
+def get_speaker_classifier():
+    global _speaker_classifier
+    if _speaker_classifier is None:
+        from speechbrain.pretrained import EncoderClassifier
+        print("[speech] Loading speaker gender classifier...")
+        _speaker_classifier = EncoderClassifier.from_hparams(
+            source="speechbrain/spkrec-ecapa-voxceleb",
+            savedir="tmp_model",
+        )
+        print("[speech] Speaker classifier loaded ✓")
+    return _speaker_classifier
+
+
+def detect_gender(audio_path: str) -> str:
+    try:
+        clf        = get_speaker_classifier()
+        signal     = clf.load_audio(audio_path)
+        embeddings = clf.encode_batch(signal)
+        val        = torch.mean(embeddings).item()
+        gender     = "female" if val > 0 else "male"
+        print(f"[speech] Gender: {gender} (val={val:.4f})")
+        return gender
+    except Exception as e:
+        print(f"[speech] Gender detection failed: {e} → defaulting to female")
+        return "female"
+
+
+async def run_tts(text: str, lang_key: str, audio_path: str) -> str:
+    import edge_tts
+    gender         = detect_gender(audio_path)
+    voices         = VOICE_DB.get(lang_key, VOICE_DB["hindi"])
+    selected_voice = voices[gender]
+    output_path    = audio_path + "_tts_output.mp3"
+    communicate    = edge_tts.Communicate(text, selected_voice)
+    await communicate.save(output_path)
+    print(f"[speech] TTS done → {selected_voice}")
+    return output_path
 
 
 # ── full pipeline ─────────────────────────────────────────────────────────────
-def run_pipeline(audio_path: str, target_lang: str) -> dict:
-    try:
-        tgt_lang_key = TARGET_LANG_MAP.get(target_lang, "hindi").lower()
+def run_pipeline(audio_path: str, target_lang: str, enable_mt: bool = True) -> dict:
+    tgt_lang_key = TARGET_LANG_MAP.get(target_lang, "hindi").lower()
 
-        # Step 1 — language identification
-        lang_result = identify_language(audio_path)
-        language    = lang_result["language"]
-        lang_conf   = lang_result["confidence"]
+    # Steps 1 — ASR + language detection (single Whisper call)
+    asr_result = transcribe_and_detect(audio_path)
+    transcript      = asr_result["transcript"]
+    language        = asr_result["language"]
+    lang_code       = asr_result["lang_code"]
+    lang_confidence = asr_result["lang_confidence"]
 
-        # Step 2 — ASR
-        use_lora   = lang_conf >= LANGID_CONFIDENCE_THRESHOLD and language in YOUR_ASR_MODELS
-        transcript = transcribe(audio_path, language, use_lora)
+    if not transcript:
+        raise ValueError("Could not transcribe audio")
 
-        if not transcript:
-            raise ValueError("Could not transcribe audio")
+    # Step 2 — Translation (only if enable_mt=True AND source != target)
+    same_language = (language == tgt_lang_key) or (language == "unknown")
 
-        # Step 3 & 4 — Translation only if source != target language
-        same_language = (language == tgt_lang_key) or (language == "unknown")
+    if not enable_mt:
+        print("[speech] MT disabled by user → skipping translation")
+        translation  = ""
+        trans_source = "mt_disabled"
+    elif same_language:
+        print(f"[speech] Source == Target ({language}) → skipping translation")
+        translation  = transcript
+        trans_source = "no_translation_needed"
+    else:
+        print(f"[speech] Translating {language} → {tgt_lang_key}...")
+        trans_result = translate(transcript, language, tgt_lang_key)
+        translation  = trans_result["translation"]
+        trans_source = trans_result["source"]
 
-        if same_language:
-            print(f"[speech] Source == Target ({language}) → skipping translation")
-            translation  = transcript
-            trans_source = "no_translation_needed"
-        else:
-            print(f"[speech] Translating {language} → {tgt_lang_key}...")
-            trans_result = translate(transcript, language, tgt_lang_key)
-            translation  = trans_result["translation"]
-            trans_source = trans_result["source"]
+    print(f"[speech] Done. lang={language} trans_source={trans_source}")
 
-        print(f"[speech] Done. lang={language} conf={lang_conf:.2f} trans_source={trans_source}")
-
-        return {
-            "transcript":         transcript,
-            "text":               transcript,
-            "translation":        translation,
-            "detected_lang":      language,
-            "lang_confidence":    round(lang_conf, 3),
-            "asr_model":          "your_lora" if use_lora else "whisper_fallback",
-            "translation_source": trans_source,
-            "same_language":      same_language,
-            "target_lang":        target_lang,
-            "confidence":         round(lang_conf, 3),
-        }
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise
+    return {
+        "transcript":         transcript,
+        "text":               transcript,
+        "translation":        translation,
+        "detected_lang":      language,
+        "lang_confidence":    lang_confidence,
+        "asr_model":          WHISPER_MODEL_ID,
+        "translation_source": trans_source,
+        "same_language":      same_language,
+        "target_lang":        target_lang,
+        "confidence":         lang_confidence,
+    }
 
 
 # ── endpoint ──────────────────────────────────────────────────────────────────
 @router.post("/api/speech/translate")
 async def speech_translate(
-    audio:            UploadFile     = File(...),
-    target_lang:      str            = Form("Hindi"),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
+    audio:       UploadFile = File(...),
+    target_lang: str        = Form("Hindi"),
+    enable_mt:   str        = Form("true"),   # "true" | "false" — MT toggle
+    enable_tts:  str        = Form("false"),  # "true" | "false" — TTS toggle
 ):
-    start = time.time()
+    start    = time.time()
+    do_mt    = enable_mt.lower()  == "true"
+    do_tts   = enable_tts.lower() == "true"
+    tts_path = None
 
     ext = os.path.splitext(audio.filename)[-1].lower() or ".webm"
 
@@ -409,15 +337,38 @@ async def speech_translate(
         audio_path = tmp.name
 
     try:
-        result = await asyncio.get_running_loop().run_in_executor(
+        # Steps 1–2 — ASR + optional MT (runs in thread pool)
+        loop   = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
             executor,
-            run_pipeline,
-            audio_path,
-            target_lang,
+            lambda: run_pipeline(audio_path, target_lang, enable_mt=do_mt),
         )
 
-        background_tasks.add_task(
-            save_session,
+        # Step 3 — TTS (optional, async)
+        if do_tts:
+            tgt_lang_key = TARGET_LANG_MAP.get(target_lang, "hindi").lower()
+            tts_text     = result.get("translation") or result.get("transcript", "")
+
+            if tts_text:
+                try:
+                    tts_path = await run_tts(tts_text, tgt_lang_key, audio_path)
+                    import base64
+                    with open(tts_path, "rb") as f:
+                        tts_b64 = base64.b64encode(f.read()).decode("utf-8")
+                    result["tts_audio"] = f"data:audio/mp3;base64,{tts_b64}"
+                    print("[speech] TTS audio embedded in response ✓")
+                except Exception as e:
+                    print(f"[speech] TTS failed: {e}")
+                    result["tts_audio"] = None
+            else:
+                result["tts_audio"] = None
+        else:
+            result["tts_audio"] = None
+
+        result["mt_enabled"]  = do_mt
+        result["tts_enabled"] = do_tts
+
+        await save_session(
             mode        = "speech",
             transcript  = result.get("transcript"),
             translation = result.get("translation"),
@@ -430,21 +381,13 @@ async def speech_translate(
         return result
 
     except HTTPException:
-        background_tasks.add_task(
-            save_session,
-            mode       = "speech",
-            status     = "error",
-            start_time = start,
-        )
+        save_session(mode="speech", status="error", start_time=start)
         raise
     except Exception as e:
-        background_tasks.add_task(
-            save_session,
-            mode       = "speech",
-            status     = "error",
-            start_time = start,
-        )
+        save_session(mode="speech", status="error", start_time=start)
         raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
     finally:
         if os.path.exists(audio_path):
             os.unlink(audio_path)
+        if tts_path and os.path.exists(tts_path):
+            os.unlink(tts_path)

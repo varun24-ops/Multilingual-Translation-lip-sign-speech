@@ -46,6 +46,9 @@ export default function LiveDemo() {
   const [audioURL, setAudioURL]       = useState("");
   const [procStep, setProcStep]       = useState(0);
   const [expanded, setExpanded]       = useState(false);
+  const [enableMT,  setEnableMT]      = useState(true);   // MT toggle
+  const [enableTTS, setEnableTTS]     = useState(false);  // TTS toggle
+  const [ttsAudio,  setTtsAudio]      = useState("");     // base64 TTS audio URL
 
   const mediaRecorderRef = useRef(null);
   const chunksRef        = useRef([]);
@@ -85,7 +88,7 @@ export default function LiveDemo() {
 
   function resetOutput() {
     setTranscript(""); setTranslation(""); setConfidence(0);
-    setErrorMsg(""); setAudioURL(""); setProcStep(0);
+    setErrorMsg(""); setAudioURL(""); setProcStep(0); setTtsAudio("");
   }
 
   useEffect(() => () => stopEverything(), [stopEverything]);
@@ -173,8 +176,10 @@ export default function LiveDemo() {
     const fileName = mode === "speech" ? `audio.${ext}` : `video.${ext}`;
 
     if (mode === "speech") {
-      formData.append("audio", blob, fileName);
+      formData.append("audio",      blob, fileName);
       formData.append("target_lang", lang);
+      formData.append("enable_mt",  enableMT  ? "true" : "false");
+      formData.append("enable_tts", enableTTS ? "true" : "false");
     } else {
       formData.append("video", blob, fileName);
     }
@@ -192,6 +197,7 @@ export default function LiveDemo() {
       setTranscript(data.transcript  || data.text || "");
       setTranslation(data.translation || "");
       setConfidence(Math.round((data.confidence ?? 0) * 100));
+      if (data.tts_audio) setTtsAudio(data.tts_audio);
       setStatus("done");
     } catch (err) {
       setStatus("error");
@@ -306,6 +312,37 @@ export default function LiveDemo() {
             />
           </label>
         </div>
+
+        {/* MT + TTS toggles — speech mode only */}
+        {mode === "speech" && (
+          <div style={s.configItem}>
+            <label style={s.label}>Features</label>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button
+                onClick={() => setEnableMT((v) => !v)}
+                style={{
+                  ...s.toggleBtn,
+                  background: enableMT ? "rgba(99,102,241,0.15)" : "rgba(255,255,255,0.03)",
+                  borderColor: enableMT ? "#6366F1" : "rgba(255,255,255,0.12)",
+                  color: enableMT ? "#818CF8" : "#475569",
+                }}
+              >
+                🔄 MT {enableMT ? "On" : "Off"}
+              </button>
+              <button
+                onClick={() => setEnableTTS((v) => !v)}
+                style={{
+                  ...s.toggleBtn,
+                  background: enableTTS ? "rgba(20,184,166,0.15)" : "rgba(255,255,255,0.03)",
+                  borderColor: enableTTS ? "#14B8A6" : "rgba(255,255,255,0.12)",
+                  color: enableTTS ? "#2DD4BF" : "#475569",
+                }}
+              >
+                🔊 TTS {enableTTS ? "On" : "Off"}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Main area */}
@@ -531,6 +568,20 @@ export default function LiveDemo() {
               </div>
             )}
 
+            {/* MT disabled hint */}
+            {mode === "speech" && status === "done" && !enableMT && (
+              <div style={{ fontSize: "11px", color: "#475569", padding: "6px 10px", background: "rgba(255,255,255,0.03)", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.06)" }}>
+                🔄 MT is off — enable it to see translation
+              </div>
+            )}
+
+            {/* TTS disabled hint */}
+            {mode === "speech" && status === "done" && !enableTTS && (
+              <div style={{ fontSize: "11px", color: "#475569", padding: "6px 10px", background: "rgba(255,255,255,0.03)", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.06)" }}>
+                🔊 TTS is off — enable it to hear the translation spoken
+              </div>
+            )}
+
             {/* Idle */}
             {status === "idle" && (
               <div style={s.placeholder}>
@@ -553,6 +604,20 @@ export default function LiveDemo() {
               </div>
             )}
           </div>
+
+          {/* TTS audio output */}
+          {status === "done" && ttsAudio && (
+            <div style={{ marginTop: "4px" }}>
+              <div style={{ fontSize: "10px", fontWeight: 600, color: "#14B8A6", letterSpacing: "0.8px", textTransform: "uppercase", marginBottom: "6px" }}>
+                🔊 TTS Output
+              </div>
+              <audio
+                controls
+                src={ttsAudio}
+                style={{ width: "100%", borderRadius: "8px", outline: "none" }}
+              />
+            </div>
+          )}
 
           {/* Actions */}
           {status === "done" && (
@@ -839,6 +904,12 @@ const s = {
   },
 
   actionRow: { display: "flex", gap: "8px" },
+  toggleBtn: {
+    padding: "7px 12px", borderRadius: "8px",
+    border: "1px solid", fontSize: "11px", fontWeight: 600,
+    cursor: "pointer", transition: "all 0.2s",
+    fontFamily: "'DM Sans',sans-serif",
+  },
   actionBtn: {
     flex: 1, padding: "9px", borderRadius: "8px",
     border: "1px solid rgba(255,255,255,0.1)",
