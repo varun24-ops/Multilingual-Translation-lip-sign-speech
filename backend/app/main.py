@@ -13,8 +13,9 @@ import models
 from routers import lip, sign, speech                      # ← moved to top
 from routers.sessions import router as sessions_router     # ← moved to top
 from routers.users    import router as users_router        # ← moved to top
-
-
+import imageio_ffmpeg
+import os
+os.environ["PATH"] += os.pathsep + imageio_ffmpeg.get_ffmpeg_dir()
 # ── startup: create all tables ─────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):                          # ← replaces create_all at module level
